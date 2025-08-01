@@ -13,12 +13,12 @@ LABEL_MAP = {
     "terdistraksi": 1,
     "fokus": 2,
     "mengantuk": 3,
-    "menggunakan_ponsel": 4 
+    "menggunakan_ponsel": 4
 }
 
 class getData(Dataset):
     def __init__(self, frames_path="../../dataset/frames", labels_path="../../dataset", 
-                 input_window=5, output_window=5, step=2, save_pkl=True, pkl_path="student_attention.pkl"):
+                 input_window=15, output_window=15, step=5, save_pkl=True, pkl_path="student_attention.pkl"):
 
         self.video_names = []
         self.video_to_sample_indices = {}
@@ -46,38 +46,31 @@ class getData(Dataset):
             print(f"[INFO] Dataset saved to {self.pkl_path}")
 
     def _load_data(self):
-        expected_folders = []
+        expected_videos = []
 
-        #Collect expected frame folders from c1.json, c2.json, c3.json
-        for cam in ["c1", "c2", "c3"]:
-            json_path = os.path.join(self.labels_path, f"{cam}.json")
-            if not os.path.exists(json_path):
-                print(f"[WARNING] Missing expected video list: {json_path}")
+        for split in ["train", "test"]:
+            anot_path = os.path.join(self.labels_path, f"{split}/anot_{split}.csv")
+            if not os.path.exists(anot_path):
+                print(f"[WARNING] Missing annotation file: {anot_path}")
                 continue
 
-            with open(json_path, "r") as f:
-                video_entries = json.load(f)
+            df = pd.read_csv(anot_path)
+            for _, row in df.iterrows():
+                video_path = row['video']
+                video_name = os.path.splitext(os.path.basename(video_path))[0]
+                expected_videos.append((split, video_name))
 
-            for entry in video_entries:
-                video_path = entry["video"]
-                video_rel = video_path.split("dataset/")[1].replace("/", os.sep)
-                video_name = os.path.splitext(os.path.basename(video_rel))[0]
-                expected_folders.append((cam, video_name))
-
-        print(f"[DEBUG] Total expected frame folders: {len(expected_folders)}")
+        print(f"[DEBUG] Total expected videos: {len(expected_videos)}")
 
         processed_count = 0
 
-        for cam, video_name in expected_folders:
+        for split, video_name in expected_videos:
             start_idx = len(self.src)
-            frame_dir = os.path.join(self.frames_path, cam, video_name)
-            label_file = os.path.join(self.labels_path, f"labels_{cam}.csv")
+            frame_dir = os.path.join(self.frames_path, split, video_name)
+            label_file = os.path.join(self.labels_path, f"{split}/anot_{split}.csv")
 
             if not os.path.exists(frame_dir):
                 print(f"[WARNING] Missing frame dir: {frame_dir}, skipping.")
-                continue
-            if not os.path.exists(label_file):
-                print(f"[WARNING] Missing label CSV for {cam}, skipping.")
                 continue
 
             df = pd.read_csv(label_file)
@@ -127,7 +120,7 @@ class getData(Dataset):
                 subject_keypoints = [[], []]
                 failed_counts = [0, 0]
 
-                for fpath in frame_files:
+                for fidx, fpath in enumerate(frame_files):
                     frame = cv2.imread(fpath)
                     if frame is None:
                         continue
@@ -135,23 +128,34 @@ class getData(Dataset):
                         crop = frame[y1:y2, x1:x2]
                         crop = cv2.resize(crop, (256, 256))
                         output = self.model(crop, save=False, verbose=False)
+
                         if output and output[0].keypoints is not None and len(output[0].keypoints.data) > 0:
-                            kpt_data = output[0].keypoints.data[0]
+                            kpt_data = output[0].keypoints.data[0].cpu().numpy()
                             kpts = [[kp[0] / 256, kp[1] / 256] for kp in kpt_data]
+
+                            # Optional: save image sample if video in 1-6
+                            if video_name in ["1", "2", "3", "4", "5", "6"] and fidx % 10 == 0:
+                                drawn = crop.copy()
+                                for pt in kpt_data:
+                                    cv2.circle(drawn, (int(pt[0]), int(pt[1])), 2, (0, 255, 0), -1)
+                                out_dir = f"pose_samples/{video_name}/subject_{idx}"
+                                os.makedirs(out_dir, exist_ok=True)
+                                out_path = os.path.join(out_dir, os.path.basename(fpath))
+                                cv2.imwrite(out_path, drawn)
                         else:
                             kpts = [[0.0, 0.0]] * 17
                             failed_counts[idx] += 1
+
                         subject_keypoints[idx].append(kpts)
 
                 for idx in range(2):
                     kpts_list = subject_keypoints[idx]
                     label_id = subject_labels[idx]
-                    full_video_name = f"{cam}_{video_name}"
+                    full_video_name = f"{split}_{video_name}"
                     for i in range(0, len(kpts_list) - self.input_window - self.output_window + 1, self.step):
                         input_seq = kpts_list[i:i + self.input_window]
-                        # Use scalar label instead of a list:
                         self.src.append(input_seq)
-                        self.cls.append(label_id)               # <-- single scalar label here
+                        self.cls.append(label_id)
                         self.video_names.append(full_video_name)
 
                 end_idx = len(self.src)
@@ -167,22 +171,21 @@ class getData(Dataset):
                     json.dump(track_log, f, indent=2)
 
                 processed_count += 1
-                print(f"[INFO] Processed {cam}/{video_name} → Failed: {failed_counts}")
+                print(f"[INFO] Processed {split}/{video_name} → Failed: {failed_counts}")
 
             except Exception as e:
                 print(f"[ERROR] Failed to process {video_name}: {e}")
                 continue
 
-        print(f"[SUMMARY] Processed {processed_count}/{len(expected_folders)} videos")
-
+        print(f"[SUMMARY] Processed {processed_count}/{len(expected_videos)} videos")
 
     def __len__(self):
         return len(self.src)
 
     def __getitem__(self, idx):
         return (
-            torch.tensor(self.src[idx], dtype=torch.float32),   # [5, 17, 2]
-            torch.tensor(self.cls[idx], dtype=torch.float32)    # [5, 5]
+            torch.tensor(self.src[idx], dtype=torch.float32),
+            torch.tensor(self.cls[idx], dtype=torch.float32)
         )
 
 if __name__ == "__main__":

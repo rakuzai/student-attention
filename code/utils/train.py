@@ -66,7 +66,7 @@ def evaluate(model, loader, device, criterion):
 if __name__ == "__main__":
     DATA_PATH = "student_attention.pkl"
     BATCH_SIZE = 32
-    EPOCHS = 100
+    EPOCHS = 20
     LR = 0.001
 
     with open(os.path.join(os.path.dirname(__file__), "student_attention.pkl"), "rb") as f:
@@ -106,7 +106,7 @@ if __name__ == "__main__":
     print(f"[DEBUG] Train sample count : {len(train_set)}")
     print(f"[DEBUG] Test sample count  : {len(test_set)}")
 
-    model = RNNModel(input_size=34, hidden_size=128, num_classes=5).to(device)
+    model = GRUModel(input_size=34, hidden_size=128, num_classes=5).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     criterion = torch.nn.CrossEntropyLoss()
 
