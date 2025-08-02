@@ -66,7 +66,7 @@ def evaluate(model, loader, device, criterion):
 if __name__ == "__main__":
     DATA_PATH = "student_attention.pkl"
     BATCH_SIZE = 32
-    EPOCHS = 20
+    EPOCHS = 500
     LR = 0.001
 
     with open(os.path.join(os.path.dirname(__file__), "student_attention.pkl"), "rb") as f:
